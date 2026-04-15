@@ -4,215 +4,131 @@ import { z } from "zod";
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 
-const SERVER_NAME = "upwork-mcp-server";
+const SERVER_NAME = "linkedin-mcp-server";
 const SERVER_VERSION = "1.0.0";
-const UPWORK_API_BASE = "https://api.upwork.com/graphql";
+const LINKEDIN_API_BASE = "https://api.linkedin.com/v2";
 
-// ─── Types ───────────────────────────────────────────────────────────────────
+// Replace these with your LinkedIn Developer App credentials
+// Get them at: https://www.linkedin.com/developers/apps
+const ACCESS_TOKEN = process.env.Linkedin_ACCESS_TOKEN || "empty";
 
-interface UpworkConfig {
-  accessToken: string;
-}
+// ─── LinkedIn API Client ──────────────────────────────────────────────────────
 
-interface JobSearchParams {
-  query: string;
-  category?: string;
-  minBudget?: number;
-  maxBudget?: number;
-  jobType?: "fixed" | "hourly";
-  experienceLevel?: "entry" | "intermediate" | "expert";
-  limit?: number;
-}
-
-interface ProposalParams {
-  jobId: string;
-  coverLetter: string;
-  bidAmount: number;
-  deliveryDays?: number;
-}
-
-// ─── Upwork API Client ────────────────────────────────────────────────────────
-
-class UpworkClient {
+class LinkedInClient {
   private readonly accessToken: string;
 
-  constructor(config: UpworkConfig) {
-    this.accessToken = config.accessToken;
+  constructor(accessToken: string) {
+    this.accessToken = accessToken;
   }
 
-  private async graphql<T>(query: string, variables?: Record<string, unknown>): Promise<T> {
-    const response = await fetch(UPWORK_API_BASE, {
-      method: "POST",
+  private async get<T>(endpoint: string, params: Record<string, string> = {}): Promise<T> {
+    const url = new URL(`${LINKEDIN_API_BASE}${endpoint}`);
+    for (const [key, value] of Object.entries(params)) {
+      url.searchParams.set(key, value);
+    }
+
+    const response = await fetch(url.toString(), {
       headers: {
-        "Content-Type": "application/json",
         Authorization: `Bearer ${this.accessToken}`,
+        "Content-Type": "application/json",
+        "X-Restli-Protocol-Version": "2.0.0",
       },
-      body: JSON.stringify({ query, variables }),
     });
 
-    if (!response.ok) {
-      throw new Error(`Upwork API error: ${response.status} ${response.statusText}`);
-    }
-
-    const json = (await response.json()) as { data: T; errors?: { message: string }[] };
-
-    if (json.errors?.length) {
-      throw new Error(`GraphQL error: ${json.errors.map((e) => e.message).join(", ")}`);
-    }
-
-    return json.data;
+    if (!response.ok) throw new Error(`LinkedIn API error: ${response.status} ${response.statusText}`);
+    return response.json() as Promise<T>;
   }
 
-  async searchJobs(params: JobSearchParams) {
-    const query = `
-      query SearchJobs(
-        $query: String!
-        $category: String
-        $minBudget: Float
-        $maxBudget: Float
-        $jobType: String
-        $experienceLevel: String
-        $limit: Int
-      ) {
-        jobPostings(
-          searchExpression: $query
-          category: $category
-          budgetMin: $minBudget
-          budgetMax: $maxBudget
-          jobType: $jobType
-          experienceLevel: $experienceLevel
-          first: $limit
-        ) {
-          edges {
-            node {
-              id
-              title
-              description
-              budget { type amount }
-              skills { name }
-              postedAt
-              client {
-                totalSpent
-                totalHires
-                country
-              }
-            }
-          }
-          totalCount
-        }
-      }
-    `;
+  private async post<T>(endpoint: string, body: object): Promise<T> {
+    const response = await fetch(`${LINKEDIN_API_BASE}${endpoint}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${this.accessToken}`,
+        "Content-Type": "application/json",
+        "X-Restli-Protocol-Version": "2.0.0",
+      },
+      body: JSON.stringify(body),
+    });
 
-    return this.graphql(query, { ...params, limit: params.limit ?? 10 });
+    if (!response.ok) throw new Error(`LinkedIn API error: ${response.status} ${response.statusText}`);
+    return response.json() as Promise<T>;
   }
 
-  async getJobDetails(jobId: string) {
-    const query = `
-      query GetJob($id: ID!) {
-        jobPosting(id: $id) {
-          id
-          title
-          description
-          budget { type amount }
-          skills { name }
-          postedAt
-          proposals { totalCount }
-          client {
-            totalSpent
-            totalHires
-            rating
-            country
-            memberSince
-          }
-        }
-      }
-    `;
+  private async delete<T>(endpoint: string): Promise<T> {
+    const response = await fetch(`${LINKEDIN_API_BASE}${endpoint}`, {
+      method: "DELETE",
+      headers: {
+        Authorization: `Bearer ${this.accessToken}`,
+        "X-Restli-Protocol-Version": "2.0.0",
+      },
+    });
 
-    return this.graphql(query, { id: jobId });
+    if (!response.ok) throw new Error(`LinkedIn API error: ${response.status} ${response.statusText}`);
+    return response.json() as Promise<T>;
   }
 
-  async submitProposal(params: ProposalParams) {
-    const mutation = `
-      mutation SubmitProposal(
-        $jobId: ID!
-        $coverLetter: String!
-        $bidAmount: Float!
-        $deliveryDays: Int
-      ) {
-        submitProposal(input: {
-          jobId: $jobId
-          coverLetter: $coverLetter
-          bidAmount: $bidAmount
-          deliveryDays: $deliveryDays
-        }) {
-          id
-          status
-          submittedAt
-        }
-      }
-    `;
+  // ── Profile ────────────────────────────────────────────────────────────────
 
-    return this.graphql(mutation, params as any);
+  async getMyProfile() {
+    return this.get("/me?projection=(id,firstName,lastName,headline,profilePicture,vanityName)");
   }
 
-  async getActiveContracts() {
-    const query = `
-      query GetContracts {
-        contracts(status: ACTIVE) {
-          edges {
-            node {
-              id
-              title
-              startedAt
-              client { name country }
-              hourlyRate
-              weeklyLimit
-            }
-          }
-        }
-      }
-    `;
-
-    return this.graphql(query);
+  async getMyEmailAddress() {
+    return this.get("/emailAddress?q=members&projection=(elements*(handle~))");
   }
 
-  async getFreelancerProfile() {
-    const query = `
-      query GetProfile {
-        freelancerProfile {
-          id
-          name
-          title
-          overview
-          hourlyRate
-          skills { name }
-          jobSuccess
-          totalEarned
-          availability
-        }
-      }
-    `;
-
-    return this.graphql(query);
+  async getConnections(start = "0", count = "10") {
+    return this.get("/connections?q=viewer&projection=(elements*(to~(id,firstName,lastName,headline)))", {
+      start,
+      count,
+    });
   }
 
-  async getEarnings(fromDate?: string, toDate?: string) {
-    const query = `
-      query GetEarnings($from: String, $to: String) {
-        earnings(fromDate: $from, toDate: $to) {
-          totalAmount
-          currency
-          breakdown {
-            contractId
-            contractTitle
-            amount
-            period
-          }
-        }
-      }
-    `;
+  // ── Posts ──────────────────────────────────────────────────────────────────
 
-    return this.graphql(query, { from: fromDate, to: toDate });
+  async createPost(authorUrn: string, text: string, visibility: string = "PUBLIC") {
+    return this.post("/ugcPosts", {
+      author: authorUrn,
+      lifecycleState: "PUBLISHED",
+      specificContent: {
+        "com.linkedin.ugc.ShareContent": {
+          shareCommentary: { text },
+          shareMediaCategory: "NONE",
+        },
+      },
+      visibility: {
+        "com.linkedin.ugc.MemberNetworkVisibility": visibility,
+      },
+    });
+  }
+
+  async deletePost(postUrn: string) {
+    const encoded = encodeURIComponent(postUrn);
+    return this.delete(`/ugcPosts/${encoded}`);
+  }
+
+  async getMyPosts(authorUrn: string, count = "10") {
+    const encoded = encodeURIComponent(authorUrn);
+    return this.get(`/ugcPosts?q=authors&authors=List(${encoded})&count=${count}`);
+  }
+
+  // ── Messages ───────────────────────────────────────────────────────────────
+
+  async getConversations() {
+    return this.get("/conversations?keyVersion=LEGACY_INBOX");
+  }
+
+  async getMessages(conversationId: string) {
+    return this.get(`/conversations/${conversationId}/events`);
+  }
+
+  async sendMessage(recipientUrn: string, messageText: string) {
+    return this.post("/messages", {
+      body: messageText,
+      recipients: [recipientUrn],
+      subject: "",
+      messageType: "MEMBER_TO_MEMBER",
+    });
   }
 }
 
@@ -223,132 +139,22 @@ const server = new McpServer({
   version: SERVER_VERSION,
 });
 
-const upwork = new UpworkClient({
-  accessToken:  "somethingfornow",
-});
+const linkedin = new LinkedInClient(ACCESS_TOKEN);
 
-// ─── Tool: Search Jobs ────────────────────────────────────────────────────────
+// ─── Tool: Get My Profile ─────────────────────────────────────────────────────
 
 server.tool(
-  "search_jobs",
-  "Search for job postings on Upwork matching given criteria",
-  {
-    query: z.string().describe("Keywords to search for in job postings"),
-    category: z.string().optional().describe("Job category (e.g. 'Web Development')"),
-    minBudget: z.number().optional().describe("Minimum budget in USD"),
-    maxBudget: z.number().optional().describe("Maximum budget in USD"),
-    jobType: z.enum(["fixed", "hourly"]).optional().describe("Contract type"),
-    experienceLevel: z
-      .enum(["entry", "intermediate", "expert"])
-      .optional()
-      .describe("Required experience level"),
-    limit: z.number().min(1).max(50).optional().describe("Number of results to return (max 50)"),
-  },
-  async (params) => {
-    try {
-      const results = await upwork.searchJobs(params);
-      return {
-        content: [{ type: "text", text: JSON.stringify(results, null, 2) }],
-      };
-    } catch (err) {
-      return {
-        content: [{ type: "text", text: `Error searching jobs: ${(err as Error).message}` }],
-        isError: true,
-      };
-    }
-  }
-);
-
-// ─── Tool: Get Job Details ────────────────────────────────────────────────────
-
-server.tool(
-  "get_job_details",
-  "Retrieve full details for a specific Upwork job posting",
-  {
-    jobId: z.string().describe("The unique ID of the Upwork job posting"),
-  },
-  async ({ jobId }) => {
-    try {
-      const details = await upwork.getJobDetails(jobId);
-      return {
-        content: [{ type: "text", text: JSON.stringify(details, null, 2) }],
-      };
-    } catch (err) {
-      return {
-        content: [{ type: "text", text: `Error fetching job details: ${(err as Error).message}` }],
-        isError: true,
-      };
-    }
-  }
-);
-
-// ─── Tool: Submit Proposal ────────────────────────────────────────────────────
-
-server.tool(
-  "submit_proposal",
-  "Submit a proposal for an Upwork job posting",
-  {
-    jobId: z.string().describe("The ID of the job to apply for"),
-    coverLetter: z.string().min(100).describe("Your cover letter (minimum 100 characters)"),
-    bidAmount: z.number().positive().describe("Your bid amount in USD"),
-    deliveryDays: z
-      .number()
-      .int()
-      .positive()
-      .optional()
-      .describe("Estimated delivery time in days (for fixed-price jobs)"),
-  },
-  async (params) => {
-    try {
-      const result = await upwork.submitProposal(params);
-      return {
-        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
-      };
-    } catch (err) {
-      return {
-        content: [
-          { type: "text", text: `Error submitting proposal: ${(err as Error).message}` },
-        ],
-        isError: true,
-      };
-    }
-  }
-);
-
-// ─── Tool: Get Active Contracts ───────────────────────────────────────────────
-
-server.tool(
-  "get_active_contracts",
-  "List all currently active contracts on your Upwork account",
+  "get_my_profile",
+  "Get your LinkedIn profile information including name, headline, and profile picture",
   {},
   async () => {
     try {
-      const contracts = await upwork.getActiveContracts();
+      const [profile, email] = await Promise.all([
+        linkedin.getMyProfile(),
+        linkedin.getMyEmailAddress(),
+      ]);
       return {
-        content: [{ type: "text", text: JSON.stringify(contracts, null, 2) }],
-      };
-    } catch (err) {
-      return {
-        content: [
-          { type: "text", text: `Error fetching contracts: ${(err as Error).message}` },
-        ],
-        isError: true,
-      };
-    }
-  }
-);
-
-// ─── Tool: Get Freelancer Profile ─────────────────────────────────────────────
-
-server.tool(
-  "get_profile",
-  "Retrieve your Upwork freelancer profile information",
-  {},
-  async () => {
-    try {
-      const profile = await upwork.getFreelancerProfile();
-      return {
-        content: [{ type: "text", text: JSON.stringify(profile, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify({ profile, email }, null, 2) }],
       };
     } catch (err) {
       return {
@@ -359,30 +165,167 @@ server.tool(
   }
 );
 
-// ─── Tool: Get Earnings ───────────────────────────────────────────────────────
+// ─── Tool: Get Connections ────────────────────────────────────────────────────
 
 server.tool(
-  "get_earnings",
-  "Retrieve your Upwork earnings summary, optionally filtered by date range",
+  "get_connections",
+  "Get a list of your LinkedIn connections",
   {
-    fromDate: z
-      .string()
-      .optional()
-      .describe("Start date for earnings report (ISO 8601, e.g. '2024-01-01')"),
-    toDate: z
-      .string()
-      .optional()
-      .describe("End date for earnings report (ISO 8601, e.g. '2024-12-31')"),
+    start: z.string().optional().describe("Pagination start index (default: '0')"),
+    count: z.string().optional().describe("Number of connections to fetch (default: '10', max: '500')"),
   },
-  async ({ fromDate, toDate }) => {
+  async ({ start, count }) => {
     try {
-      const earnings = await upwork.getEarnings(fromDate, toDate);
+      const result = await linkedin.getConnections(start ?? "0", count ?? "10");
       return {
-        content: [{ type: "text", text: JSON.stringify(earnings, null, 2) }],
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
       };
     } catch (err) {
       return {
-        content: [{ type: "text", text: `Error fetching earnings: ${(err as Error).message}` }],
+        content: [{ type: "text", text: `Error fetching connections: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ─── Tool: Create Post ────────────────────────────────────────────────────────
+
+server.tool(
+  "create_post",
+  "Create a new LinkedIn post on your profile",
+  {
+    authorUrn: z.string().describe("Your LinkedIn member URN, e.g. 'urn:li:person:ABC123'"),
+    text: z.string().describe("The text content of the post"),
+    visibility: z
+      .enum(["PUBLIC", "CONNECTIONS", "LOGGED_IN"])
+      .optional()
+      .describe("Who can see the post (default: PUBLIC)"),
+  },
+  async ({ authorUrn, text, visibility }) => {
+    try {
+      const result = await linkedin.createPost(authorUrn, text, visibility ?? "PUBLIC");
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error creating post: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ─── Tool: Get My Posts ───────────────────────────────────────────────────────
+
+server.tool(
+  "get_my_posts",
+  "Fetch your recent LinkedIn posts",
+  {
+    authorUrn: z.string().describe("Your LinkedIn member URN, e.g. 'urn:li:person:ABC123'"),
+    count: z.string().optional().describe("Number of posts to fetch (default: '10')"),
+  },
+  async ({ authorUrn, count }) => {
+    try {
+      const result = await linkedin.getMyPosts(authorUrn, count ?? "10");
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error fetching posts: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ─── Tool: Delete Post ────────────────────────────────────────────────────────
+
+server.tool(
+  "delete_post",
+  "Delete one of your LinkedIn posts by its URN",
+  {
+    postUrn: z.string().describe("The URN of the post to delete, e.g. 'urn:li:ugcPost:ABC123'"),
+  },
+  async ({ postUrn }) => {
+    try {
+      const result = await linkedin.deletePost(postUrn);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error deleting post: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ─── Tool: Get Conversations ──────────────────────────────────────────────────
+
+server.tool(
+  "get_conversations",
+  "Get your LinkedIn message conversations/inbox",
+  {},
+  async () => {
+    try {
+      const result = await linkedin.getConversations();
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error fetching conversations: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ─── Tool: Get Messages ───────────────────────────────────────────────────────
+
+server.tool(
+  "get_messages",
+  "Get messages from a specific LinkedIn conversation",
+  {
+    conversationId: z.string().describe("The ID of the conversation to fetch messages from"),
+  },
+  async ({ conversationId }) => {
+    try {
+      const result = await linkedin.getMessages(conversationId);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error fetching messages: ${(err as Error).message}` }],
+        isError: true,
+      };
+    }
+  }
+);
+
+// ─── Tool: Send Message ───────────────────────────────────────────────────────
+
+server.tool(
+  "send_message",
+  "Send a direct message to a LinkedIn connection",
+  {
+    recipientUrn: z.string().describe("The URN of the recipient, e.g. 'urn:li:person:ABC123'"),
+    messageText: z.string().describe("The text content of the message to send"),
+  },
+  async ({ recipientUrn, messageText }) => {
+    try {
+      const result = await linkedin.sendMessage(recipientUrn, messageText);
+      return {
+        content: [{ type: "text", text: JSON.stringify(result, null, 2) }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: "text", text: `Error sending message: ${(err as Error).message}` }],
         isError: true,
       };
     }
